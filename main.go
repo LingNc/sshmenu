@@ -295,11 +295,10 @@ func draw(w io.Writer, s *uiState, width, height int) {
 	s.adjustOffset(listRows)
 
 	var b strings.Builder
-	b.WriteString("\033[H\033[?25l") // home + hide cursor
+	b.WriteString("\033[H\033[2J\033[?25l") // home + clear + hide cursor
 
 	// Title.
-	b.WriteString("\033[K  连接到SSH:\r\n")
-	b.WriteString("\033[K\r\n")
+	b.WriteString("  连接到SSH:\r\n\r\n")
 
 	// List rows.
 	for i := 0; i < listRows; i++ {
