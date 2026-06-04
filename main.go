@@ -6,8 +6,9 @@
 // Keys (inside the TUI):
 //   - j / Down        move cursor down
 //   - k / Up          move cursor up
-//   - /               start filter (type to narrow list)
-//   - Esc             clear filter
+//   - (type)          filter the list (substring, case-insensitive)
+//   - Backspace       delete last filter character
+//   - Esc             clear filter (or quit if filter is empty)
 //   - Enter           connect to selected host (exits TUI, runs `ssh`)
 //   - q / Ctrl+C      quit without connecting
 package main
@@ -19,9 +20,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+	"unicode/utf8"
 
-	"charm.land/bubbles/v2/list"
-	tea "charm.land/bubbletea/v2"
+	"golang.org/x/term"
 )
 
 // SSHHost represents a single host entry parsed from ~/.ssh/config.
@@ -37,116 +39,388 @@ type SSHHost struct {
 	ProxyJump    string
 }
 
-// item wraps an SSHHost to satisfy list.Item.
-type item struct{ host SSHHost }
+// keyKind classifies a key event read from the terminal.
+type keyKind int
 
-// FilterValue is what bubbles uses for fuzzy filtering. Combining alias,
-// hostname, and user lets the user search by any of them.
-func (i item) FilterValue() string {
-	return i.host.Alias + " " + i.host.HostName + " " + i.host.User
+const (
+	keyRune keyKind = iota
+	keyUp
+	keyDown
+	keyEnter
+	keyBackspace
+	keyEsc
+	keyQuit
+	keyCtrlC
+)
+
+// keyEvent represents one parsed key (or key chord) from the terminal.
+// `special` is keyRune for printable characters; in that case `r` holds
+// the character. For all other keyKinds, `r` is zero.
+type keyEvent struct {
+	special keyKind
+	r       rune
 }
 
-// itemDelegate renders each list item as two plain text lines:
-//   line 1:  "  alias"  (or "> alias" for the selected item)
-//   line 2:  "    hostname @ user"  (omitted if both hostname and user are empty)
-//
-// No colors, no borders -- just text and the `>` selection marker.
-type itemDelegate struct{}
-
-func (d itemDelegate) Height() int  { return 2 }
-func (d itemDelegate) Spacing() int { return 1 } // blank line between items, matching DESIGN.md
-func (d itemDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd {
-	return nil
+// readKey reads one key event from stdin in raw mode. It handles plain
+// printable characters, Enter, Backspace, Ctrl-C, 'q', and the CSI escape
+// sequences for arrow keys (ESC [ A / ESC [ B). Lone ESC is detected via
+// a short read deadline -- if no further byte arrives within 10ms, the
+// event is reported as keyEsc.
+func readKey() (keyEvent, error) {
+	var b [1]byte
+	for {
+		n, err := os.Stdin.Read(b[:])
+		if err != nil {
+			return keyEvent{}, err
+		}
+		if n == 0 {
+			continue
+		}
+		switch b[0] {
+		case 0x03:
+			return keyEvent{special: keyCtrlC}, nil
+		case 0x0D, 0x0A:
+			return keyEvent{special: keyEnter}, nil
+		case 0x7F, 0x08:
+			return keyEvent{special: keyBackspace}, nil
+		case 'q':
+			return keyEvent{special: keyQuit}, nil
+		case 0x1B:
+			return readEscapeSequence()
+		default:
+			if b[0] >= 0x20 && b[0] <= 0x7E {
+				return keyEvent{special: keyRune, r: rune(b[0])}, nil
+			}
+			// Ignore other control bytes.
+		}
+	}
 }
 
-// Render writes the item's text into w. Uses plain io.Writer -- *strings.Builder
-// satisfies io.Writer, so callers can pass either.
-func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
-	i, ok := listItem.(item)
-	if !ok {
+// readEscapeSequence handles the bytes that follow an initial ESC (0x1B).
+// It uses a 10ms peek timeout to distinguish a bare ESC keypress from the
+// start of a CSI sequence (e.g. ESC [ A for the Up arrow).
+func readEscapeSequence() (keyEvent, error) {
+	_ = os.Stdin.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
+	var b [1]byte
+	n, err := os.Stdin.Read(b[:])
+	// Always clear the deadline, even on error.
+	_ = os.Stdin.SetReadDeadline(time.Time{})
+
+	if n == 0 {
+		// Timeout: lone ESC.
+		return keyEvent{special: keyEsc}, nil
+	}
+	if err != nil {
+		return keyEvent{}, err
+	}
+	if b[0] != '[' {
+		// Unknown ESC sequence; ignore.
+		return readKey()
+	}
+	// Read the final byte of the CSI sequence. Once '[' has arrived, the
+	// third byte always follows immediately, so a plain blocking read is
+	// safe here.
+	m, err := os.Stdin.Read(b[:])
+	if err != nil {
+		return keyEvent{}, err
+	}
+	if m == 0 {
+		return keyEvent{special: keyEsc}, nil
+	}
+	switch b[0] {
+	case 'A':
+		return keyEvent{special: keyUp}, nil
+	case 'B':
+		return keyEvent{special: keyDown}, nil
+	}
+	// Unrecognised CSI sequence; ignore.
+	return readKey()
+}
+
+// uiState holds the runtime state of the TUI.
+type uiState struct {
+	hosts    []SSHHost
+	filtered []int   // indices into hosts, in display order
+	cursor   int     // index into filtered
+	filter   strings.Builder
+	offset   int     // index into filtered of the first visible row
+}
+
+// newUIState allocates a fresh uiState with an empty filter list and
+// no filter text. The caller must invoke applyFilter() to populate
+// `filtered` based on the initial (empty) filter string.
+func newUIState(hosts []SSHHost) *uiState {
+	return &uiState{
+		hosts:    hosts,
+		filtered: make([]int, 0, len(hosts)),
+	}
+}
+
+// hostFilterString returns the lowercase text used for substring matching
+// against the user's filter. Combining alias, user, hostname, and a
+// non-default port lets the user search by any of them.
+func hostFilterString(h SSHHost) string {
+	parts := make([]string, 0, 4)
+	if h.Alias != "" {
+		parts = append(parts, h.Alias)
+	}
+	if h.User != "" {
+		parts = append(parts, h.User)
+	}
+	if h.HostName != "" {
+		parts = append(parts, h.HostName)
+	}
+	if h.Port != "" && h.Port != "22" {
+		parts = append(parts, h.Port)
+	}
+	return strings.ToLower(strings.Join(parts, " "))
+}
+
+// applyFilter rebuilds the filtered slice from the current filter text.
+// It also clamps the cursor into the valid range. It does NOT adjust the
+// scroll offset; that is the caller's responsibility (draw does it).
+func (s *uiState) applyFilter() {
+	s.filtered = s.filtered[:0]
+	q := strings.ToLower(s.filter.String())
+	for i, h := range s.hosts {
+		if q == "" || strings.Contains(hostFilterString(h), q) {
+			s.filtered = append(s.filtered, i)
+		}
+	}
+	switch {
+	case len(s.filtered) == 0:
+		s.cursor = 0
+	case s.cursor >= len(s.filtered):
+		s.cursor = len(s.filtered) - 1
+	case s.cursor < 0:
+		s.cursor = 0
+	}
+}
+
+// adjustOffset keeps the cursor visible within the given viewport height.
+// visibleRows must be >= 1.
+func (s *uiState) adjustOffset(visibleRows int) {
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	if len(s.filtered) == 0 {
+		s.offset = 0
 		return
 	}
-	if index == m.Index() {
-		fmt.Fprint(w, "> ")
+	if s.cursor < s.offset {
+		s.offset = s.cursor
+		return
+	}
+	if s.cursor >= s.offset+visibleRows {
+		s.offset = s.cursor - visibleRows + 1
+	}
+	if s.offset < 0 {
+		s.offset = 0
+	}
+}
+
+func (s *uiState) moveUp() {
+	if s.cursor > 0 {
+		s.cursor--
+	}
+}
+
+func (s *uiState) moveDown() {
+	if s.cursor < len(s.filtered)-1 {
+		s.cursor++
+	}
+}
+
+// buildDetail returns the "user@host[:port]" portion of a row, omitting
+// fields that are empty and omitting :22 (the ssh default).
+func buildDetail(h SSHHost) string {
+	var b strings.Builder
+	if h.User != "" {
+		b.WriteString(h.User)
+		b.WriteByte('@')
+	}
+	b.WriteString(h.HostName)
+	if h.Port != "" && h.Port != "22" {
+		b.WriteByte(':')
+		b.WriteString(h.Port)
+	}
+	return b.String()
+}
+
+// drawRow writes one list row (without a trailing newline) into w. The
+// row begins with `\033[K` to clear any stale characters from a previous
+// frame, then a 3-character selection marker, then the alias in brackets
+// and the detail text.
+func drawRow(w io.Writer, h SSHHost, selected bool) {
+	fmt.Fprint(w, "\033[K")
+	if selected {
+		fmt.Fprint(w, "-> ")
 	} else {
-		fmt.Fprint(w, "  ")
+		fmt.Fprint(w, "   ")
 	}
-	fmt.Fprint(w, i.host.Alias)
-	if i.host.HostName != "" || i.host.User != "" {
-		fmt.Fprint(w, "\n    ")
-		fmt.Fprint(w, i.host.HostName)
-		if i.host.User != "" {
-			fmt.Fprint(w, " @ ")
-			fmt.Fprint(w, i.host.User)
+	fmt.Fprint(w, "[")
+	fmt.Fprint(w, h.Alias)
+	fmt.Fprint(w, "]")
+	if detail := buildDetail(h); detail != "" {
+		fmt.Fprint(w, " ")
+		fmt.Fprint(w, detail)
+	}
+}
+
+// draw renders the full TUI frame to w. It builds the entire frame in a
+// strings.Builder first and writes it in a single syscall to avoid
+// partial-frame flicker.
+func draw(w io.Writer, s *uiState, width, height int) {
+	const topMargin = 1
+	filterBarHeight := 0
+	if s.filter.Len() > 0 {
+		filterBarHeight = 2 // separator line + status line
+	}
+	visibleRows := height - topMargin - filterBarHeight
+	if visibleRows < 1 {
+		visibleRows = 1
+	}
+	s.adjustOffset(visibleRows)
+
+	var b strings.Builder
+
+	// Hide the cursor and home it.
+	b.WriteString("\033[H\033[?25l")
+
+	// Top margin: blank lines that clear any content above the list.
+	for i := 0; i < topMargin; i++ {
+		b.WriteString("\033[K\r\n")
+	}
+
+	// Visible list rows.
+	for i := 0; i < visibleRows; i++ {
+		idx := s.offset + i
+		if idx < 0 || idx >= len(s.filtered) {
+			b.WriteString("\033[K\r\n")
+			continue
+		}
+		drawRow(&b, s.hosts[s.filtered[idx]], idx == s.cursor)
+		b.WriteString("\r\n")
+	}
+
+	// Filter bar.
+	if filterBarHeight > 0 {
+		// Separator.
+		sep := strings.Repeat("-", width)
+		b.WriteString("\033[K")
+		b.WriteString(sep)
+		b.WriteString("\r\n")
+		// Status: "  filter: <text> (cursor/filtered)"
+		b.WriteString("\033[K  filter: ")
+		b.WriteString(s.filter.String())
+		fmt.Fprintf(&b, " (%d/%d)", s.cursor+1, len(s.filtered))
+	}
+
+	// One final newline in case the filter bar isn't shown, so the last
+	// drawn row ends cleanly. Harmless otherwise because the next frame
+	// homes the cursor with \033[H.
+	if filterBarHeight == 0 {
+		b.WriteString("\r\n")
+	}
+
+	_, _ = io.WriteString(w, b.String())
+}
+
+// runTUI enters raw mode, runs the event loop, and returns either the
+// host the user selected or nil if the user quit.
+func runTUI(hosts []SSHHost) (*SSHHost, error) {
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return nil, fmt.Errorf("enter raw mode: %w", err)
+	}
+	// Single defer that runs on every exit path (return, panic, etc.).
+	defer func() {
+		_ = term.Restore(fd, oldState)
+		fmt.Print("\033[?25h\033[?1049l")
+	}()
+
+	// Enter alternate screen, clear it, home the cursor.
+	fmt.Print("\033[?1049h\033[2J\033[H")
+
+	state := newUIState(hosts)
+	state.applyFilter()
+
+	width, height, err := term.GetSize(fd)
+	if err != nil || width <= 0 {
+		width = 80
+	}
+	if err != nil || height <= 0 {
+		height = 24
+	}
+	draw(os.Stdout, state, width, height)
+
+	for {
+		ev, err := readKey()
+		if err != nil {
+			return nil, err
+		}
+		dirty := false
+		switch ev.special {
+		case keyQuit, keyCtrlC:
+			return nil, nil
+		case keyEnter:
+			if len(state.filtered) == 0 {
+				continue
+			}
+			host := state.hosts[state.filtered[state.cursor]]
+			return &host, nil
+		case keyEsc:
+			if state.filter.Len() > 0 {
+				state.filter.Reset()
+				state.applyFilter()
+				dirty = true
+			} else {
+				return nil, nil
+			}
+		case keyUp:
+			state.moveUp()
+			dirty = true
+		case keyDown:
+			state.moveDown()
+			dirty = true
+		case keyBackspace:
+			if state.filter.Len() > 0 {
+				cur := state.filter.String()
+				// Trim the last rune (handles multi-byte UTF-8).
+				r, size := utf8.DecodeLastRuneInString(cur)
+				if r != utf8.RuneError {
+					state.filter.Reset()
+					state.filter.WriteString(cur[:len(cur)-size])
+					state.applyFilter()
+					dirty = true
+				}
+			}
+		case keyRune:
+			switch ev.r {
+			case 'j':
+				state.moveDown()
+				dirty = true
+			case 'k':
+				state.moveUp()
+				dirty = true
+			default:
+				state.filter.WriteRune(ev.r)
+				state.applyFilter()
+				dirty = true
+			}
+		}
+		if dirty {
+			width, height, err = term.GetSize(fd)
+			if err != nil || width <= 0 {
+				width = 80
+			}
+			if err != nil || height <= 0 {
+				height = 24
+			}
+			draw(os.Stdout, state, width, height)
 		}
 	}
-}
-
-// model is the top-level bubbletea Model. It embeds a bubbles list for the
-// selectable host list and remembers which host the user picked (or nil if
-// they quit).
-type model struct {
-	list         list.Model
-	hosts        []SSHHost
-	selectedHost *SSHHost // nil until user presses Enter
-}
-
-// initialModel converts parsed hosts into list items and configures the list.
-func initialModel(hosts []SSHHost) model {
-	items := make([]list.Item, len(hosts))
-	for i, h := range hosts {
-		items[i] = item{host: h}
-	}
-
-	const defaultWidth, defaultHeight = 80, 24
-	l := list.New(items, itemDelegate{}, defaultWidth, defaultHeight)
-	l.Title = fmt.Sprintf("sshmenu (%d hosts)", len(hosts))
-	l.SetFilteringEnabled(true)
-	l.SetShowStatusBar(false)
-	l.SetShowHelp(true)
-
-	return model{
-		list:  l,
-		hosts: hosts,
-	}
-}
-
-// Init implements tea.Model.
-func (m model) Init() tea.Cmd { return nil }
-
-// Update handles key events. We intercept "enter" (to capture the selected
-// host and quit), "q" and "esc" (to quit, but only when NOT in filter mode --
-// when filtering, those keys should be typed into the filter input or clear
-// it). All other messages are forwarded to the embedded list so it can handle
-// WindowSize, j/k, /, filter typing, etc.
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "enter":
-			if i, ok := m.list.SelectedItem().(item); ok {
-				m.selectedHost = &i.host
-				return m, tea.Quit
-			}
-		case "q", "esc":
-			if m.list.FilterState() != list.Filtering {
-				return m, tea.Quit
-			}
-		}
-	}
-
-	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
-	return m, cmd
-}
-
-// View renders the TUI into a tea.View with the alternate screen enabled.
-// In v2, View() returns tea.View (not string) and AltScreen is a field on
-// the returned view rather than a program option.
-func (m model) View() tea.View {
-	v := tea.NewView(m.list.View())
-	v.AltScreen = true
-	return v
 }
 
 // parseSSHConfig reads ~/.ssh/config and returns a slice of hosts.
@@ -375,19 +649,16 @@ func main() {
 		os.Exit(0)
 	}
 
-	p := tea.NewProgram(initialModel(hosts))
-	finalModel, err := p.Run()
+	host, err := runTUI(hosts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sshmenu: %v\n", err)
 		os.Exit(1)
 	}
-
-	fm, ok := finalModel.(model)
-	if !ok || fm.selectedHost == nil {
+	if host == nil {
 		// User quit without picking a host.
 		return
 	}
-	if err := connectSSH(*fm.selectedHost); err != nil {
+	if err := connectSSH(*host); err != nil {
 		fmt.Fprintf(os.Stderr, "sshmenu: %v\n", err)
 		os.Exit(1)
 	}
