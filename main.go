@@ -139,11 +139,12 @@ func readEscapeSequence() (keyEvent, error) {
 
 // uiState holds the runtime state of the TUI.
 type uiState struct {
-	hosts    []SSHHost
-	filtered []int   // indices into hosts, in display order
-	cursor   int     // index into filtered
-	filter   strings.Builder
-	offset   int     // index into filtered of the first visible row
+	hosts      []SSHHost
+	filtered   []int   // indices into hosts, in display order
+	cursor     int     // index into filtered
+	filter     strings.Builder
+	offset     int     // index into filtered of the first visible row
+	aliasWidth int     // longest alias in current filtered list, for alignment
 }
 
 // newUIState allocates a fresh uiState with an empty filter list and
@@ -194,6 +195,13 @@ func (s *uiState) applyFilter() {
 		s.cursor = len(s.filtered) - 1
 	case s.cursor < 0:
 		s.cursor = 0
+	}
+	// Calculate max alias width for alignment.
+	s.aliasWidth = 0
+	for _, idx := range s.filtered {
+		if w := len(s.hosts[idx].Alias); w > s.aliasWidth {
+			s.aliasWidth = w
+		}
 	}
 }
 
@@ -251,7 +259,7 @@ func buildDetail(h SSHHost) string {
 // row begins with `\033[K` to clear any stale characters from a previous
 // frame, then a 3-character selection marker, then the alias in brackets
 // and the detail text.
-func drawRow(w io.Writer, h SSHHost, selected bool) {
+func drawRow(w io.Writer, h SSHHost, selected bool, aliasWidth int) {
 	fmt.Fprint(w, "\033[K")
 	if selected {
 		fmt.Fprint(w, "-> ")
@@ -260,6 +268,10 @@ func drawRow(w io.Writer, h SSHHost, selected bool) {
 	}
 	fmt.Fprint(w, "[")
 	fmt.Fprint(w, h.Alias)
+	// Pad inside brackets to align the closing bracket.
+	if pad := aliasWidth - len(h.Alias); pad > 0 {
+		fmt.Fprint(w, strings.Repeat(" ", pad))
+	}
 	fmt.Fprint(w, "]")
 	if detail := buildDetail(h); detail != "" {
 		fmt.Fprint(w, " ")
@@ -298,7 +310,7 @@ func draw(w io.Writer, s *uiState, width, height int) {
 			b.WriteString("\033[K\r\n")
 			continue
 		}
-		drawRow(&b, s.hosts[s.filtered[idx]], idx == s.cursor)
+		drawRow(&b, s.hosts[s.filtered[idx]], idx == s.cursor, s.aliasWidth)
 		b.WriteString("\r\n")
 	}
 
