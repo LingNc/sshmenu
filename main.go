@@ -283,55 +283,43 @@ func drawRow(w io.Writer, h SSHHost, selected bool, aliasWidth int) {
 // strings.Builder first and writes it in a single syscall to avoid
 // partial-frame flicker.
 func draw(w io.Writer, s *uiState, width, height int) {
-	const topMargin = 2 // title + blank line
 	filterBarHeight := 0
 	if s.filter.Len() > 0 {
-		filterBarHeight = 2 // separator line + status line
+		filterBarHeight = 2
 	}
-	visibleRows := height - topMargin - filterBarHeight
-	if visibleRows < 1 {
-		visibleRows = 1
+	// Title takes 2 lines (title + blank). Remaining space is for the list.
+	listRows := height - 2 - filterBarHeight
+	if listRows < 1 {
+		listRows = 1
 	}
-	s.adjustOffset(visibleRows)
+	s.adjustOffset(listRows)
 
 	var b strings.Builder
+	b.WriteString("\033[H\033[?25l") // home + hide cursor
 
-	// Hide the cursor and home it.
-	b.WriteString("\033[H\033[?25l")
-
-	// Title line.
+	// Title.
 	b.WriteString("\033[K  连接到SSH:\r\n")
 	b.WriteString("\033[K\r\n")
 
-	// Visible list rows.
-	for i := 0; i < visibleRows; i++ {
+	// List rows.
+	for i := 0; i < listRows; i++ {
 		idx := s.offset + i
-		if idx < 0 || idx >= len(s.filtered) {
-			b.WriteString("\033[K\r\n")
-			continue
+		if idx >= 0 && idx < len(s.filtered) {
+			drawRow(&b, s.hosts[s.filtered[idx]], idx == s.cursor, s.aliasWidth)
+		} else {
+			b.WriteString("\033[K")
 		}
-		drawRow(&b, s.hosts[s.filtered[idx]], idx == s.cursor, s.aliasWidth)
 		b.WriteString("\r\n")
 	}
 
 	// Filter bar.
 	if filterBarHeight > 0 {
-		// Separator.
-		sep := strings.Repeat("-", width)
 		b.WriteString("\033[K")
-		b.WriteString(sep)
+		b.WriteString(strings.Repeat("-", width))
 		b.WriteString("\r\n")
-		// Status: "  filter: <text> (cursor/filtered)"
 		b.WriteString("\033[K  filter: ")
 		b.WriteString(s.filter.String())
 		fmt.Fprintf(&b, " (%d/%d)", s.cursor+1, len(s.filtered))
-	}
-
-	// One final newline in case the filter bar isn't shown, so the last
-	// drawn row ends cleanly. Harmless otherwise because the next frame
-	// homes the cursor with \033[H.
-	if filterBarHeight == 0 {
-		b.WriteString("\r\n")
 	}
 
 	_, _ = io.WriteString(w, b.String())
