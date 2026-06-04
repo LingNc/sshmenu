@@ -287,10 +287,9 @@ func draw(w io.Writer, s *uiState, width, height int) {
 	// Hide the cursor and home it.
 	b.WriteString("\033[H\033[?25l")
 
-	// Top margin: blank lines that clear any content above the list.
-	for i := 0; i < topMargin; i++ {
-		b.WriteString("\033[K\r\n")
-	}
+	// Title line.
+	b.WriteString("\033[K  连接到SSH:\r\n")
+	b.WriteString("\033[K\r\n")
 
 	// Visible list rows.
 	for i := 0; i < visibleRows; i++ {
