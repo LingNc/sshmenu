@@ -260,7 +260,6 @@ func buildDetail(h SSHHost) string {
 // frame, then a 3-character selection marker, then the alias in brackets
 // and the detail text.
 func drawRow(w io.Writer, h SSHHost, selected bool, aliasWidth int) {
-	fmt.Fprint(w, "\033[K")
 	if selected {
 		fmt.Fprint(w, "-> ")
 	} else {
@@ -287,7 +286,6 @@ func draw(w io.Writer, s *uiState, width, height int) {
 	if s.filter.Len() > 0 {
 		filterBarHeight = 2
 	}
-	// Title takes 2 lines (title + blank). Remaining space is for the list.
 	listRows := height - 2 - filterBarHeight
 	if listRows < 1 {
 		listRows = 1
@@ -295,28 +293,28 @@ func draw(w io.Writer, s *uiState, width, height int) {
 	s.adjustOffset(listRows)
 
 	var b strings.Builder
-	b.WriteString("\033[H\033[2J\033[?25l") // home + clear + hide cursor
+	b.WriteString("\033[2J\033[?25l") // clear screen + hide cursor
 
-	// Title.
-	b.WriteString("  连接到SSH:\r\n\r\n")
+	// Title at row 1.
+	b.WriteString("\033[1;1H  连接到SSH:")
 
-	// List rows.
+	// List rows start at row 3.
 	for i := 0; i < listRows; i++ {
+		row := 3 + i
+		b.WriteString(fmt.Sprintf("\033[%d;1H", row))
 		idx := s.offset + i
 		if idx >= 0 && idx < len(s.filtered) {
 			drawRow(&b, s.hosts[s.filtered[idx]], idx == s.cursor, s.aliasWidth)
-		} else {
-			b.WriteString("\033[K")
 		}
-		b.WriteString("\r\n")
 	}
 
 	// Filter bar.
 	if filterBarHeight > 0 {
-		b.WriteString("\033[K")
+		sepRow := 3 + listRows
+		b.WriteString(fmt.Sprintf("\033[%d;1H", sepRow))
 		b.WriteString(strings.Repeat("-", width))
-		b.WriteString("\r\n")
-		b.WriteString("\033[K  filter: ")
+		b.WriteString(fmt.Sprintf("\033[%d;1H", sepRow+1))
+		b.WriteString("  filter: ")
 		b.WriteString(s.filter.String())
 		fmt.Fprintf(&b, " (%d/%d)", s.cursor+1, len(s.filtered))
 	}
