@@ -283,7 +283,7 @@ func drawRow(w io.Writer, h SSHHost, selected bool, aliasWidth int) {
 // strings.Builder first and writes it in a single syscall to avoid
 // partial-frame flicker.
 func draw(w io.Writer, s *uiState, width, height int) {
-	const topMargin = 1
+	const topMargin = 2 // title + blank line
 	filterBarHeight := 0
 	if s.filter.Len() > 0 {
 		filterBarHeight = 2 // separator line + status line
