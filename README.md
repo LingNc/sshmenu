@@ -14,6 +14,7 @@ make windows    # Windows amd64 (.exe)
 
 ```bash
 ./sshmenu
+./sshmenu --version   # 查看版本
 ```
 
 ## 展示
@@ -45,6 +46,17 @@ make windows    # Windows amd64 (.exe)
 ## 依赖
 
 - `golang.org/x/term`
+
+## 发布
+
+推送版本 tag 即可自动构建并发布到 GitHub Releases：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+GitHub Actions 会自动编译 linux/windows 版本并上传到 Release 页面。
 
 ## 协议
 

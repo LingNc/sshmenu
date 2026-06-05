@@ -634,7 +634,15 @@ func connectSSH(host SSHHost) error {
 	return cmd.Run()
 }
 
+// version is set at build time via -ldflags "-X main.version=..."
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Printf("sshmenu %s\n", version)
+		return
+	}
+
 	hosts, err := parseSSHConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sshmenu: %v\n", err)
