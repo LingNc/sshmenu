@@ -279,8 +279,8 @@ func TestReorderHosts(t *testing.T) {
 		{Alias: "delta"},
 	}
 
-	// Matching alias moves to front, order of others preserved.
-	got := reorderHosts(hosts, "gamma")
+	// History puts most-recent first, rest in original order.
+	got := reorderHosts(hosts, []string{"gamma", "alpha"})
 	want := []SSHHost{
 		{Alias: "gamma"},
 		{Alias: "alpha"},
@@ -291,48 +291,67 @@ func TestReorderHosts(t *testing.T) {
 		t.Errorf("reorderHosts(matched) = %+v, want %+v", got, want)
 	}
 
-	// Non-matching alias leaves the slice unchanged.
-	got2 := reorderHosts(hosts, "missing")
+	// Empty history leaves the slice unchanged.
+	got2 := reorderHosts(hosts, nil)
 	if !reflect.DeepEqual(got2, hosts) {
-		t.Errorf("reorderHosts(missing) = %+v, want %+v", got2, hosts)
+		t.Errorf("reorderHosts(empty) = %+v, want %+v", got2, hosts)
 	}
 
-	// Empty input.
-	if got3 := reorderHosts([]SSHHost{}, "anything"); len(got3) != 0 {
-		t.Errorf("reorderHosts(empty) = %+v, want empty", got3)
-	}
-
-	// First-element match is a no-op reorder.
-	got4 := reorderHosts(hosts, "alpha")
-	if !reflect.DeepEqual(got4, hosts) {
-		t.Errorf("reorderHosts(first) = %+v, want %+v", got4, hosts)
+	// History with no matching aliases is a no-op.
+	got3 := reorderHosts(hosts, []string{"missing"})
+	if !reflect.DeepEqual(got3, hosts) {
+		t.Errorf("reorderHosts(no match) = %+v, want %+v", got3, hosts)
 	}
 }
 
 func TestHistoryRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
-	// On macOS, os.UserConfigDir ignores XDG and uses ~/Library/Application Support.
-	// Force a deterministic path by also setting HOME.
 	t.Setenv("HOME", tmp)
-	// On Windows, UserConfigDir uses AppData/USERPROFILE.
 	t.Setenv("APPDATA", tmp)
 	t.Setenv("USERPROFILE", tmp)
 
-	// File does not exist yet: loadLastHost returns "".
-	if got := loadLastHost(); got != "" {
-		t.Errorf("loadLastHost before save = %q, want empty", got)
+	// File does not exist yet: loadHistory returns nil.
+	if got := loadHistory(); got != nil {
+		t.Errorf("loadHistory before save = %v, want nil", got)
 	}
 
-	saveLastHost("myhost")
+	saveHistory([]string{"myhost"})
 
-	if got := loadLastHost(); got != "myhost" {
-		t.Errorf("loadLastHost after save = %q, want %q", got, "myhost")
+	if got := loadHistory(); len(got) != 1 || got[0] != "myhost" {
+		t.Errorf("loadHistory after save = %v, want [myhost]", got)
 	}
 
-	// Overwrite.
-	saveLastHost("another")
-	if got := loadLastHost(); got != "another" {
-		t.Errorf("loadLastHost after overwrite = %q, want %q", got, "another")
+	// Multiple entries.
+	saveHistory([]string{"first", "second", "third"})
+	if got := loadHistory(); len(got) != 3 || got[0] != "first" || got[2] != "third" {
+		t.Errorf("loadHistory multi = %v, want [first second third]", got)
+	}
+}
+
+func TestUpdateHistory(t *testing.T) {
+	// New entry prepended.
+	got := updateHistory([]string{"a", "b"}, "c")
+	if len(got) != 3 || got[0] != "c" || got[1] != "a" || got[2] != "b" {
+		t.Errorf("updateHistory new = %v, want [c a b]", got)
+	}
+
+	// Existing entry moved to front.
+	got = updateHistory([]string{"a", "b", "c"}, "b")
+	if len(got) != 3 || got[0] != "b" || got[1] != "a" || got[2] != "c" {
+		t.Errorf("updateHistory move = %v, want [b a c]", got)
+	}
+
+	// Caps at maxHistoryEntries.
+	long := make([]string, maxHistoryEntries)
+	for i := range long {
+		long[i] = string(rune('a' + i))
+	}
+	got = updateHistory(long, "new")
+	if len(got) != maxHistoryEntries {
+		t.Errorf("updateHistory cap len = %d, want %d", len(got), maxHistoryEntries)
+	}
+	if got[0] != "new" {
+		t.Errorf("updateHistory cap first = %v, want new", got[0])
 	}
 }

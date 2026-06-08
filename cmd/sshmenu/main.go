@@ -37,11 +37,10 @@ func main() {
 		os.Exit(0)
 	}
 
-	if lastAlias := loadLastHost(); lastAlias != "" {
-		hosts = reorderHosts(hosts, lastAlias)
-	}
+	history := loadHistory()
+	hosts = reorderHosts(hosts, history)
 
-	host, err := runTUI(hosts)
+	host, err := runTUI(hosts, history)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sshmenu: %v\n", err)
 		os.Exit(1)

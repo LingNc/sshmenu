@@ -197,7 +197,7 @@ func draw(w io.Writer, s *uiState, width, height int) {
 
 // runTUI enters raw mode, runs the event loop, and returns either the
 // host the user selected or nil if the user quit.
-func runTUI(hosts []SSHHost) (*SSHHost, error) {
+func runTUI(hosts []SSHHost, history []string) (*SSHHost, error) {
 	fd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
@@ -238,7 +238,7 @@ func runTUI(hosts []SSHHost) (*SSHHost, error) {
 				continue
 			}
 			host := state.hosts[state.filtered[state.cursor]]
-			saveLastHost(host.Alias)
+			saveHistory(updateHistory(history, host.Alias))
 			return &host, nil
 		case keyEsc:
 			if state.filter.Len() > 0 {
