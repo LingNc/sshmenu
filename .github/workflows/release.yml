@@ -33,7 +33,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          go build -ldflags="-s -w -X main.version=${VERSION}" -o sshmenu${{ matrix.suffix }} .
+          go build -ldflags="-s -w -X main.version=${VERSION}" -o sshmenu${{ matrix.suffix }} ./cmd/sshmenu
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
