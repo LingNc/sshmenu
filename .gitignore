@@ -5,5 +5,7 @@
 !Makefile
 !LICENSE
 
-docs/
+docs/*
 *.exe
+
+!docs/issue.md
