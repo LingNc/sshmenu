@@ -28,6 +28,14 @@ func main() {
 		return
 	}
 
+	if len(os.Args) > 1 && (os.Args[1] == "--update" || os.Args[1] == "update") {
+		if err := doUpdate(); err != nil {
+			fmt.Fprintf(os.Stderr, "sshmenu: update failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Parse SSH hosts.
 	hosts, err := parseSSHConfig()
 	if err != nil {
