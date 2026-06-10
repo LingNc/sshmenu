@@ -1,6 +1,6 @@
 # sshmenu
 
-从 `~/.ssh/config` 读取 SSH 主机列表，用终端交互界面选择并连接。支持自定义启动项。
+从 `~/.ssh/config` 读取 SSH 主机列表，用终端交互界面选择并连接。支持自定义启动项和自更新。
 
 ## 构建
 
@@ -15,6 +15,7 @@ make windows    # Windows amd64 (.exe)
 ```bash
 ./sshmenu
 ./sshmenu --version   # 查看版本
+./sshmenu --update    # 检查并更新到最新版本
 ```
 
 ## 展示
@@ -55,6 +56,14 @@ sshmenu 会记录你连接过的主机和启动过的程序（LRU），下次启
 - Linux: `~/.config/sshmenu/last`
 - Windows: `%APPDATA%\sshmenu\last`
 
+## 自更新
+
+```bash
+./sshmenu --update
+```
+
+自动检查 GitHub Releases 最新版本，下载并替换当前二进制。支持 Linux 和 Windows。
+
 ## 项目结构
 
 ```
@@ -67,6 +76,7 @@ cmd/sshmenu/
 ├── ssh.go            # SSH 连接
 ├── tui.go            # 终端界面
 ├── history.go        # 最近使用记录
+├── update.go         # 自更新
 └── sshmenu_test.go   # 测试
 ```
 
