@@ -172,20 +172,47 @@ func replaceBinary(tmpPath, targetPath string) error {
 }
 
 // replaceBinaryUnix atomically replaces targetPath via os.Rename.
+// Falls back to copy+delete when rename fails (e.g. cross-device).
 func replaceBinaryUnix(tmpPath, targetPath string) error {
 	backup := targetPath + ".backup"
 	// Best-effort backup of the old binary.
 	os.Rename(targetPath, backup)
 
 	if err := os.Rename(tmpPath, targetPath); err != nil {
-		// Try to roll back.
-		os.Rename(backup, targetPath)
-		return fmt.Errorf("replace binary: %w (check file permissions or try with sudo)", err)
+		// Cross-device or permission error — fall back to copy.
+		if err := copyFile(tmpPath, targetPath); err != nil {
+			os.Rename(backup, targetPath)
+			return fmt.Errorf("replace binary: %w", err)
+		}
+		os.Remove(tmpPath)
 	}
-
-	// Clean up backup (ignore error).
 	os.Remove(backup)
 	return nil
+}
+
+// copyFile copies a file from src to dst, preserving permissions.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }
 
 // replaceBinaryWindows handles the Windows case where a running .exe cannot be
