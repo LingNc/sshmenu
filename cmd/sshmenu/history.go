@@ -67,31 +67,31 @@ func updateHistory(history []string, alias string) []string {
 	return result
 }
 
-// reorderHosts reorders hosts so that those appearing in the history
-// come first (in LRU order), followed by hosts not in history
-// (preserving their original order). This gives the user a
-// most-recently-used-at-top experience.
-func reorderHosts(hosts []SSHHost, history []string) []SSHHost {
+// reorderItems reorders items so that those appearing in the history come
+// first (in LRU order), followed by items not in history (preserving their
+// original order). Identity is by Alias, shared between SSH hosts and
+// Launchers, so LRU works uniformly across both kinds.
+func reorderItems(items []ListItem, history []string) []ListItem {
 	if len(history) == 0 {
-		return hosts
+		return items
 	}
-	hostMap := make(map[string]SSHHost, len(hosts))
-	for _, h := range hosts {
-		hostMap[h.Alias] = h
+	itemMap := make(map[string]ListItem, len(items))
+	for _, it := range items {
+		itemMap[it.Alias] = it
 	}
-	result := make([]SSHHost, 0, len(hosts))
+	result := make([]ListItem, 0, len(items))
 	for _, alias := range history {
-		if h, ok := hostMap[alias]; ok {
-			result = append(result, h)
+		if it, ok := itemMap[alias]; ok {
+			result = append(result, it)
 		}
 	}
 	historySet := make(map[string]bool, len(history))
 	for _, alias := range history {
 		historySet[alias] = true
 	}
-	for _, h := range hosts {
-		if !historySet[h.Alias] {
-			result = append(result, h)
+	for _, it := range items {
+		if !historySet[it.Alias] {
+			result = append(result, it)
 		}
 	}
 	return result

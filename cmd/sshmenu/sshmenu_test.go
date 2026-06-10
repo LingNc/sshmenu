@@ -271,36 +271,85 @@ Host *
 // silence unused import warning if strings is unused after edits
 var _ = strings.TrimSpace
 
-func TestReorderHosts(t *testing.T) {
-	hosts := []SSHHost{
-		{Alias: "alpha"},
-		{Alias: "beta"},
-		{Alias: "gamma"},
-		{Alias: "delta"},
+func TestReorderItems(t *testing.T) {
+	items := []ListItem{
+		{Kind: itemSSH, Alias: "alpha"},
+		{Kind: itemSSH, Alias: "beta"},
+		{Kind: itemLauncher, Alias: "bash"},
+		{Kind: itemLauncher, Alias: "pwsh"},
 	}
 
-	// History puts most-recent first, rest in original order.
-	got := reorderHosts(hosts, []string{"gamma", "alpha"})
-	want := []SSHHost{
-		{Alias: "gamma"},
-		{Alias: "alpha"},
-		{Alias: "beta"},
-		{Alias: "delta"},
+	// History with mixed SSH/Launcher aliases.
+	got := reorderItems(items, []string{"bash", "alpha"})
+	want := []ListItem{
+		{Kind: itemLauncher, Alias: "bash"},
+		{Kind: itemSSH, Alias: "alpha"},
+		{Kind: itemSSH, Alias: "beta"},
+		{Kind: itemLauncher, Alias: "pwsh"},
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("reorderHosts(matched) = %+v, want %+v", got, want)
+		t.Errorf("reorderItems(matched) = %+v, want %+v", got, want)
 	}
 
-	// Empty history leaves the slice unchanged.
-	got2 := reorderHosts(hosts, nil)
-	if !reflect.DeepEqual(got2, hosts) {
-		t.Errorf("reorderHosts(empty) = %+v, want %+v", got2, hosts)
+	// Empty history.
+	got2 := reorderItems(items, nil)
+	if !reflect.DeepEqual(got2, items) {
+		t.Errorf("reorderItems(empty) = %+v, want %+v", got2, items)
 	}
 
-	// History with no matching aliases is a no-op.
-	got3 := reorderHosts(hosts, []string{"missing"})
-	if !reflect.DeepEqual(got3, hosts) {
-		t.Errorf("reorderHosts(no match) = %+v, want %+v", got3, hosts)
+	// No match.
+	got3 := reorderItems(items, []string{"missing"})
+	if !reflect.DeepEqual(got3, items) {
+		t.Errorf("reorderItems(no match) = %+v, want %+v", got3, items)
+	}
+}
+
+func TestParseLaunchers(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+	t.Setenv("HOME", tmp)
+	t.Setenv("APPDATA", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	// File does not exist: returns nil, no error.
+	got, err := parseLaunchers()
+	if err != nil {
+		t.Fatalf("parseLaunchers (no file): %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil, got %+v", got)
+	}
+
+	// Write a valid config.
+	cfg := `# comment
+bash=/bin/bash
+zsh = /bin/zsh
+
+# empty name and empty command ignored
+=emptyname
+emptycmd=
+
+powershell=pwsh
+`
+	cfgPath := filepath.Join(tmp, "sshmenu", "launchers")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err = parseLaunchers()
+	if err != nil {
+		t.Fatalf("parseLaunchers: %v", err)
+	}
+	want := []Launcher{
+		{Name: "bash", Command: "/bin/bash"},
+		{Name: "zsh", Command: "/bin/zsh"},
+		{Name: "powershell", Command: "pwsh"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseLaunchers = %+v, want %+v", got, want)
 	}
 }
 

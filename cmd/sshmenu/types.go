@@ -13,6 +13,28 @@ type SSHHost struct {
 	ProxyJump    string
 }
 
+// itemKind classifies a ListItem.
+type itemKind int
+
+const (
+	itemSSH      itemKind = iota
+	itemLauncher
+)
+
+// Launcher represents a user-defined custom command.
+type Launcher struct {
+	Name    string
+	Command string
+}
+
+// ListItem represents one selectable entry in the TUI list.
+type ListItem struct {
+	Kind     itemKind
+	Alias    string   // display name, shared by SSH alias and Launcher name
+	Host     SSHHost  // non-zero when Kind == itemSSH
+	Launcher Launcher // non-zero when Kind == itemLauncher
+}
+
 // keyKind classifies a key event read from the terminal.
 type keyKind int
 
